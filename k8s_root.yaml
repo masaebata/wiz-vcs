@@ -1,0 +1,21 @@
+# bad-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dangerous-pod
+spec:
+  hostPID: true                       # ← ホストPID共有
+  containers:
+    - name: app
+      image: nginx:latest
+      securityContext:
+        privileged: true              # ← 特権コンテナ（ほぼホストアクセス）
+        runAsUser: 0                  # ← rootで実行
+      volumeMounts:
+        - mountPath: /host/etc
+          name: host-etc
+  volumes:
+    - name: host-etc
+      hostPath:
+        path: /etc                      # ← ホストの /etc をマウント（危険）
+        type: Directory
