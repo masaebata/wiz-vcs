@@ -1,0 +1,141 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "ap-northeast-1"
+}
+
+# デフォルトVPCを取得（簡略化のため）
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# 1) インターネットから誰でもHTTPで入れるSG (INSECURE)
+resource "aws_security_group" "public_web" {
+  name        = "public-web-insecure"
+  description = "INSECURE: allow HTTP from anywhere"
+  vpc_id      = data.aws_vpc.default.id
+
+  # どこからでも80番アクセスOK
+  ingress {
+    description = "HTTP from anywhere (INSECURE)"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # 必要なら22番も開けられる（強く非推奨）
+  # ingress {
+  #   description = "SSH from anywhere (VERY INSECURE)"
+  #   from_port   = 22
+  #   to_port     = 22
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "public-web-insecure"
+  }
+}
+
+# 2) 公開EC2 (INSECURE)
+resource "aws_instance" "public_ec2" {
+  ami                         = "ami-0bba69335379e17f8" # ap-northeast-1 の Amazon Linux 2023 の例。必要に応じて更新してください
+  instance_type               = "t3.micro"
+  subnet_id                   = data.aws_subnets.default.ids[0]
+  vpc_security_group_ids      = [aws_security_group.public_web.id]
+  associate_public_ip_address = true
+
+  user_data = <<-EOF
+              #!/bin/bash
+              dnf install -y httpd
+              systemctl enable httpd
+              systemctl start httpd
+              echo "Hello from INSECURE EC2" > /var/www/html/index.html
+              EOF
+
+  tags = {
+    Name = "public-ec2-insecure"
+  }
+}
+
+# 3) 全世界に公開されたS3バケット (INSECURE)
+resource "aws_s3_bucket" "public_bucket" {
+  bucket = "insecure-public-bucket-1234567890" # バケット名はグローバルで一意にしてください
+}
+
+# S3のオーナーシップ設定（新しいAWS仕様への対応）
+resource "aws_s3_bucket_ownership_controls" "public_bucket" {
+  bucket = aws_s3_bucket.public_bucket.id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# ACLを使う場合のために先にACL適用を明示
+resource "aws_s3_bucket_acl" "public_bucket" {
+  depends_on = [aws_s3_bucket_ownership_controls.public_bucket]
+  bucket     = aws_s3_bucket.public_bucket.id
+  acl        = "public-read"  # INSECURE: バケットACLで公開
+}
+
+# パブリックアクセスブロックを"全部OFF"にする (INSECURE)
+resource "aws_s3_bucket_public_access_block" "public_bucket" {
+  bucket                  = aws_s3_bucket.public_bucket.id
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+# バケットポリシーで全世界にGetObjectを許可 (INSECURE)
+resource "aws_s3_bucket_policy" "public_bucket" {
+  bucket = aws_s3_bucket.public_bucket.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "PublicReadGetObject"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = [
+          "s3:GetObject"
+        ]
+        Resource = [
+          "${aws_s3_bucket.public_bucket.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# ついでに1個公開オブジェクトを置く
+resource "aws_s3_object" "public_object" {
+  bucket       = aws_s3_bucket.public_bucket.id
+  key          = "hello.txt"
+  content      = "Hello from INSECURE S3"
+  content_type = "text/plain"
+  acl          = "public-read"  # INSECURE: オブジェクト単位でも公開
+}
