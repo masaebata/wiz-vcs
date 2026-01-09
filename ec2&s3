@@ -139,3 +139,5 @@ resource "aws_s3_object" "public_object" {
   content_type = "text/plain"
   acl          = "public-read"  # INSECURE: オブジェクト単位でも公開
 }
+
+#チェック
